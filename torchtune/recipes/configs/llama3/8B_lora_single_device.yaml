@@ -1,0 +1,103 @@
+# Config for single device LoRA finetuning in lora_finetune_single_device.py
+# using a Llama3 8B model
+#
+# This config assumes that you've run the following command before launching
+# this run:
+#   tune download meta-llama/Meta-Llama-3-8B --output-dir /scratch/gpfs/$USER/.cache/huggingface/hub/Meta-Llama-3-8B --hf-token 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
+#
+# To launch on a single device, run the following command from root:
+#   tune run lora_finetune_single_device --config llama3/8B_lora_single_device
+#
+# You can add specific overrides through the command line. For example
+# to override the checkpointer directory while launching training
+# you can run:
+#   tune run lora_finetune_single_device --config llama3/8B_lora_single_device checkpointer.checkpoint_dir=<YOUR_CHECKPOINT_DIR>
+#
+# This config works only for training on single device.
+
+
+# Model Arguments
+model:
+  _component_: torchtune.models.llama3.lora_llama3_8b
+  lora_attn_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj']
+  apply_lora_to_mlp: False
+  apply_lora_to_output: False
+  lora_rank: 128
+  lora_alpha: 512
+
+# Tokenizer
+tokenizer:
+  _component_: torchtune.models.llama3.llama3_tokenizer
+  path: /scratch/gpfs/tw8948/.cache/huggingface/hub/Meta-Llama-3-8B/original/tokenizer.model
+
+checkpointer:
+  _component_: torchtune.utils.FullModelMetaCheckpointer
+  checkpoint_dir: /scratch/gpfs/tw8948/.cache/huggingface/hub/Meta-Llama-3-8B/original
+  checkpoint_files: [
+    consolidated.00.pth
+  ]
+  recipe_checkpoint: null
+  output_dir: /scratch/gpfs/tw8948/LESS/torchtune_results/Meta-Llama-3-8B/output/
+  model_type: LLAMA3
+resume_from_checkpoint: False
+
+# Dataset and Sampler
+dataset:
+  _component_: torchtune.datasets.alpaca_original_dataset
+  train_on_input: False
+
+val_dataset: 
+  _component_: torchtune.datasets.samsum_validation_dataset
+  train_on_input: False
+
+test_dataset: 
+  _component_: torchtune.datasets.samsum_test_dataset
+  train_on_input: False
+
+seed: 1
+shuffle: True
+batch_size: 8
+val_batch_size: 16
+test_batch_size: 16
+
+
+# Optimizer and Scheduler
+optimizer:
+  _component_: torch.optim.AdamW
+  weight_decay: 0.01
+  lr: 3e-4
+lr_scheduler:
+  _component_: torchtune.modules.get_cosine_schedule_with_warmup
+  num_warmup_steps: 100
+
+loss:
+  _component_: torch.nn.CrossEntropyLoss
+
+# Training
+epochs: 1
+max_steps_per_epoch: null
+gradient_accumulation_steps: 1
+compile: False
+
+# Logging
+output_dir: /scratch/gpfs/tw8948/LESS/torchtune_results/Meta-Llama-3-8B/lora_finetune_output
+metric_logger:
+  _component_: torchtune.utils.metric_logging.DiskLogger
+  log_dir: ${output_dir}
+log_every_n_steps: null
+
+# Environment
+device: cuda
+dtype: bf16
+enable_activation_checkpointing: True
+
+# Profiler (disabled)
+profiler:
+  _component_: torchtune.utils.profiler
+  enabled: False
+
+# Added parameters
+method: TracIN-AdaptiveSelect-PerBatch
+fracinv: 2.0
+result_dir: /scratch/gpfs/tw8948/LESS/torchtune_results/
+n_val: 80
