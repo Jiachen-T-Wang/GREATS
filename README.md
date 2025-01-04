@@ -1,6 +1,6 @@
 # GREATS: Online Selection of High-Quality Data for LLM Training in Every Iteration
 
-[![arXiv](https://img.shields.io/badge/arXiv-2312.00849-b31b1b.svg)](https://arxiv.org/abs/2312.00849)
+[![OpenReview](https://img.shields.io/badge/OpenReview-232VcN8tSx-3f3f3f.svg)](https://openreview.net/forum?id=232VcN8tSx&referrer=%5Bthe%20profile%20of%20Ruoxi%20Jia%5D(%2Fprofile%3Fid%3D~Ruoxi_Jia1))
 
 Jiachen T. Wang, Tong Wu, Dawn Song, Prateek Mittal, Ruoxi Jia
 
