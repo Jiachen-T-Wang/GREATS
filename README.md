@@ -2,9 +2,10 @@
 
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
-<div style="text-align: center;">
+<p align="center">
     <img src="./abstract.png" alt="abs" width="400px">
-</div>
+</p>
+
 
 
 
