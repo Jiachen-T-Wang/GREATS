@@ -1,6 +1,6 @@
 # GREATS: Online Selection of High-Quality Data for LLM Training in Every Iteration
 
-[![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx))
+[![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
 Jiachen T. Wang, Tong Wu, Dawn Song, Prateek Mittal, Ruoxi Jia
 
@@ -18,14 +18,19 @@ pip install -r requirement.txt
 
 Run experiments using:
 ```bash
-sh warmup_train.sh Regular 4 0.05 4 world_religions
+sh online_batch_select_mmlu.sh Regular 4 0.05 5 mmlu llama2 1 2e-05 11 1 sociology
+sh online_batch_select_mmlu.sh GREATS 2 0.05 5 mmlu llama2 1 2e-05 11 1 sociology
 ```
+
+The result from the trial run:
+![TrialRun](./trialrun.png)
+
 
 ### Parameters
 
 ```bash
-sh warmup_train.sh \
-    <selection_method>  # Regular, GradNorm, MaxLoss, TracIN-AdaptiveSelect-PerBatch(GREATS)
+sh online_batch_select_mmlu.sh \
+    <selection_method>  # Regular, GREATS, GradNorm, MaxLoss, RHO-Loss, SBERT
     <batch_size>        # 4, 8, 16, 32
     <data_percentage>   # Percentage of full data to train (e.g., 0.05)
     <validation_size>   # Size of validation set
