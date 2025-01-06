@@ -2,19 +2,14 @@
 
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
-Jiachen T. Wang, Tong Wu, Dawn Song, Prateek Mittal, Ruoxi Jia
+![abs](./abstract.png)
 
-## Overview
 
-GREATS is a framework for efficient LLM training through online data selection. It adaptively selects high-quality training samples in every iteration to improve training efficiency and model performance.
-
-## Installation
+## Quick Start
 
 ```bash
 pip install -r requirement.txt
 ```
-
-## Quick Start
 
 Run experiments using:
 ```bash
@@ -55,6 +50,9 @@ sh online_batch_select_mmlu.sh \
     url={https://openreview.net/forum?id=232VcN8tSx}
 }
 ```
+
+## Contact
+If you have any issues running the codebase, feel free to contact us at tianhaowang@princeton.edu. 
 
 ## Acknowledgments
 
