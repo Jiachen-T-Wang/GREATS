@@ -15,6 +15,8 @@
 pip install -r requirement.txt
 ```
 
+Download data at this [link](https://drive.google.com/file/d/1L8IE7_9R-8zamRrR-69PRIB9WoEHF5XY/view?usp=sharing), and put it in the folder of codebase. 
+
 Run experiments using:
 ```bash
 sh online_batch_select_mmlu.sh Regular 4 0.05 5 mmlu llama2 1 2e-05 11 1 sociology
