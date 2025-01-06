@@ -3,7 +3,7 @@
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
 <p align="center">
-    <img src="./abstract.png" alt="abs" width="400px">
+    <img src="./abstract.png" alt="abs" width="500px">
 </p>
 
 
