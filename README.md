@@ -2,7 +2,10 @@
 
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
-![abs](./abstract.png)
+<div style="text-align: center;">
+    <img src="./abstract.png" alt="abs" width="400px">
+</div>
+
 
 
 ## Quick Start
@@ -19,6 +22,8 @@ sh online_batch_select_mmlu.sh GREATS 2 0.05 5 mmlu llama2 1 2e-05 11 1 sociolog
 
 The result from the trial run:
 ![TrialRun](./trialrun.png)
+
+**Note:** to make it compatible with gradient accumulation, in the current implementation of ghost inner product we still use 2 forward-backward passes. 
 
 
 ### Parameters
