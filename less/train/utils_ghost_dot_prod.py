@@ -21,7 +21,9 @@ def find_GClayers(module):
     return GC_layers
 
 
-
+# For GREATS, while we can save the fwd and bwd pass by using the one from ghost,
+# it does not seem to be working with the current implementation of the gradient accumulation.
+# So here we just do another fwd and bwd pass over the selected data points for clean implementation.
 def compute_GradProd_GC_per_iter(model, device, batch_train, validation_loader, optimizer, trainable_layers, 
                                per_val=False, return_tracin_and_similarity=True):
 

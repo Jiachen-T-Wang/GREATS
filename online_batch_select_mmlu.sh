@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=online-grad-select-LESS
+#SBATCH --job-name=online-grad-select
 #SBATCH --mail-type=begin
 #SBATCH --mail-type=end
 #SBATCH --mail-type=fail

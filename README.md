@@ -30,11 +30,17 @@ The result from the trial run:
 
 ```bash
 sh online_batch_select_mmlu.sh \
-    <selection_method>  # Regular, GREATS, GradNorm, MaxLoss, RHO-Loss, SBERT
-    <batch_size>        # 4, 8, 16, 32
-    <data_percentage>   # Percentage of full data to train (e.g., 0.05)
-    <validation_size>   # Size of validation set
-    <subject>          # Dataset subject (e.g., world_religions)
+    <selection_method>  # Batch selection strategy. Options: Regular, GREATS, GradNorm, MaxLoss, RHO-Loss, SBERT.
+    <batch_size>        # Batch size for training. 
+    <data_percentage>   # Percentage of the full dataset used for training (for faster test). 
+    <validation_size>   # Size of the validation set. 
+    <task>              # Task name for the model (e.g., a classification or QA task).
+    <model>             # Model name or path to the pretrained model.
+    <lora_alpha>        # LoRA hyperparameter (if applicable).
+    <learning_rate>     # Learning rate for the optimizer.
+    [seed]              # Random seed for reproducibility.
+    [gradient_accumulation_steps]  # Number of gradient accumulation steps.
+    [subject]           # Dataset subject.
 ```
 
 ## Citation
@@ -52,4 +58,4 @@ sh online_batch_select_mmlu.sh \
 
 ## Acknowledgments
 
-This project builds upon [LESS](https://github.com/princeton-nlp/LESS). We thank the authors for their valuable contributions.
+The codebase builds upon [LESS](https://github.com/princeton-nlp/LESS). 
