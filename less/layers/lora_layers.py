@@ -167,25 +167,35 @@ class GCLoRALinear(LoRALinear):
         self.layer_input = input[0]  # input is a tuple
         self.pre_activation = output
 
+
+    # def pe_grad_gradcomp(self, deriv_pre_activ, per_sample=True):
+    #     is_2d = self.layer_input.dim() == 2
+
+    #     a = self.layer_input
+
+    #     batch_size = deriv_pre_activ.shape[0]
+
+    #     dLdO = deriv_pre_activ * batch_size
+
+    #     dLdO = dLdO.to(self.lora_B.dtype)
+    #     a = a.to(self.lora_A.dtype)
+
+    #     dLdO_B = torch.matmul(dLdO, self.lora_B)
+    #     a_A = torch.matmul(a, self.lora_A.T)
+
+    #     decompose_pair_A = (dLdO_B, a)
+    #     decompose_pair_B = (dLdO, a_A)
+
+    #     return [decompose_pair_A, decompose_pair_B]
+
     def pe_grad_gradcomp(self, deriv_pre_activ, per_sample=True):
-        is_2d = self.layer_input.dim() == 2
 
-        a = self.layer_input
-
-        batch_size = deriv_pre_activ.shape[0]
-
-        dLdO = deriv_pre_activ * batch_size
-
-        dLdO = dLdO.to(self.lora_B.dtype)
-        a = a.to(self.lora_A.dtype)
-
+        a = self.layer_input.to(self.lora_A.dtype)
+        dLdO = (deriv_pre_activ * deriv_pre_activ.shape[0]).to(self.lora_B.dtype)
         dLdO_B = torch.matmul(dLdO, self.lora_B)
         a_A = torch.matmul(a, self.lora_A.T)
 
-        decompose_pair_A = (dLdO_B, a)
-        decompose_pair_B = (dLdO, a_A)
-
-        return [decompose_pair_A, decompose_pair_B]
+        return [(dLdO_B, a), (dLdO, a_A)]
 
 
 class MergedLinear(nn.Linear, LoRALayer):

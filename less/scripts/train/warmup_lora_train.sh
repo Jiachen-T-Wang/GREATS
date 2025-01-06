@@ -7,10 +7,20 @@ model_path=$2
 percentage=$3
 data_seed=$4
 job_name=$5
+
 method=$6
 batch_size=$7
 subject=$8
 nval=$9
+task=${10}
+combined_modules=${11}  # This is the new variable for the combined module name
+lora_alpha=${12}
+lr=${13}
+gradient_accumulation_steps=${14}
+seed=${15}
+
+echo "Training with combined modules: $combined_modules"
+
 
 output_dir=../out/${job_name}
 if [[ ! -d $output_dir ]]; then
@@ -40,6 +50,12 @@ training_args="$base_training_args \
 --method $method \
 --subject $subject \
 --n_val $nval \
+--analysis_dataset $task \
+--lora_target_modules $combined_modules \
+--lora_alpha $lora_alpha \
+--learning_rate $lr \
+--gradient_accumulation_steps $gradient_accumulation_steps \
+--seed $seed \
 --train_files ${train_files[@]} 2>&1 | tee $output_dir/train.log"
 
 eval "$header" "$training_args"

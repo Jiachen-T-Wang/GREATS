@@ -1,6 +1,6 @@
 # GREATS: Online Selection of High-Quality Data for LLM Training in Every Iteration
 
-[![arXiv](https://img.shields.io/badge/arXiv-2312.00849-b31b1b.svg)](https://arxiv.org/abs/2312.00849)
+[![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx))
 
 Jiachen T. Wang, Tong Wu, Dawn Song, Prateek Mittal, Ruoxi Jia
 
@@ -11,14 +11,7 @@ GREATS is a framework for efficient LLM training through online data selection. 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
-```
-
-Required packages:
-```bash
-pip install peft==0.7.1
-pip install transformers==4.36.2
-pip install torch
+pip install -r requirement.txt
 ```
 
 ## Quick Start
@@ -55,7 +48,3 @@ sh warmup_train.sh \
 ## Acknowledgments
 
 This project builds upon [LESS](https://github.com/princeton-nlp/LESS). We thank the authors for their valuable contributions.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

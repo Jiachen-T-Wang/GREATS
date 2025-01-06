@@ -6,7 +6,7 @@ import torch
 import time
 from transformers import Trainer, TrainingArguments
 from transformers.trainer_utils import TrainOutput, set_seed, has_length
-from transformers.file_utils import is_torch_tpu_available
+# from transformers.file_utils import is_torch_tpu_available
 from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
 from transformers.utils import is_sagemaker_mp_enabled, is_datasets_available
 import datasets
@@ -23,9 +23,10 @@ import numpy as np
 import logging
 import json
 import warnings
+import time
 
 
-from ..train.utils_ghost_dot_prod import compute_TracIN_GC_per_iter, greedy_selection, find_GClayers
+from ..train.utils_ghost_dot_prod import compute_GradProd_GC_per_iter, greedy_selection, find_GClayers
 
 # Configure logging at the root level of logging
 logging.basicConfig(level=logging.INFO)  # You can adjust the logging level as needed
@@ -37,15 +38,10 @@ logger = logging.getLogger(__name__)
 
 
 class GCTrainer(Trainer):
-    def __init__(self, test_dataset, test_dataset_withexp, *args, **kwargs):
-        # training_args = kwargs.get('args', None)
-        # if isinstance(training_args, TrainingArguments):
-        #     training_args.eval_batch_size = 1
-        # else:
-        #     kwargs['args'] = TrainingArguments(eval_batch_size=1)
+    def __init__(self, test_dataset, *args, **kwargs):
+
         super().__init__(*args, **kwargs)
         self.test_dataset = test_dataset
-        self.test_dataset_withexp = test_dataset_withexp
 
     def _inner_training_loop(
         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -55,6 +51,7 @@ class GCTrainer(Trainer):
         if self.args.auto_find_batch_size:
             self.state.train_batch_size = self._train_batch_size
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
+
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
 
@@ -209,6 +206,8 @@ class GCTrainer(Trainer):
         # FSDP(Transformers Model), Dynamo Optimized Module(Transformers Model) etc.
 
         # Train!
+        num_train_epochs = 50
+
         logger.info("***** Running training *****")
         logger.info(f"  Num examples = {num_examples:,}")
         logger.info(f"  Num Epochs = {num_train_epochs:,}")
@@ -277,31 +276,26 @@ class GCTrainer(Trainer):
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
-        # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
-        if not args.ignore_data_skip:
-            for epoch in range(epochs_trained):
-                sampler = get_dataloader_sampler(train_dataloader)
-                sampler_kinds = [RandomSampler]
-                if version.parse(accelerate_version) > version.parse("0.23.0"):
-                    sampler_kinds.append(SeedableRandomSampler)
-                is_random_sampler = isinstance(sampler, tuple(sampler_kinds))
-                if is_torch_less_than_1_11 or not is_random_sampler:
-                    # We just need to begin an iteration to create the randomization of the sampler.
-                    for _ in train_dataloader:
-                        break
-                else:
-                    # Otherwise we need to call the whooooole sampler cause there is some random operation added
-                    # AT THE VERY END!
-                    sampler = sampler if sampler is not None else []
-                    _ = list(sampler)
-
-
 
         ### Layers that are trainable and will be GCed.
         trainable_layers = find_GClayers(model)
 
+        ### Load Embedding or Reference Model for SBERT and RHOLoss
+        if args.method == "SBERT":
+            # Load a pre-trained model
+            from sentence_transformers import SentenceTransformer
+            emb_model = SentenceTransformer('all-MiniLM-L6-v2')
+        elif args.method == "RHOLoss":
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            # Load Llama3.1 8B model as reference model
+            ref_model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+            ref_tokenizer = AutoTokenizer.from_pretrained(ref_model_name)
+            ref_model = AutoModelForCausalLM.from_pretrained(ref_model_name)
+            ref_model.to(args.device)
+
 
         total_batched_samples = 0
+
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
             if hasattr(epoch_iterator, "set_epoch"):
@@ -329,61 +323,51 @@ class GCTrainer(Trainer):
                 steps_trained_in_current_epoch = 0
                 rng_to_sync = True
 
+
             step = -1
             for step, inputs in enumerate(epoch_iterator):
+
                 total_batched_samples += 1
 
                 model.train()
 
+
                 ##### ***************************************** #####
-                ##### Add Gradient Selection #####
+                ##### Gradient Selection #####
                 eval_dataloader = self.get_gc_eval_dataloader(self.eval_dataset, val_batchsize=2, shuffle=True)
                 
-                if args.method == 'TracIN-AdaptiveSelect-PerBatch':
-                    
-                    tracin_local_score, similarity_local_score = compute_TracIN_GC_per_iter(
-                            model, device=args.device, batch_data=inputs, validation_loader=eval_dataloader, optimizer=self.optimizer, 
-                            trainable_layers=trainable_layers)
+                if args.method == 'GREATS':
 
-                    lr = 1
-                    lr_to_be_use_1, lr_to_be_use_2 = lr, 0
+                    start_time = time.time()
+                    
+                    # Get TracIN scores and reuse the forward/backward pass
+                    tracin_local_score, similarity_local_score = compute_GradProd_GC_per_iter(
+                            model, 
+                            device=args.device, 
+                            batch_train=inputs, 
+                            validation_loader=eval_dataloader, 
+                            optimizer=self.optimizer, 
+                            trainable_layers=trainable_layers)
+                    
+                    print('Total Extra Time for GREATS: ', time.time()-start_time)
+
+                    start_time = time.time()
+
+                    lr = self.optimizer.param_groups[0]["lr"]
+                    lr_to_be_use_1, lr_to_be_use_2 = lr, lr**2
 
                     selected_ind = greedy_selection(tracin_local_score*lr_to_be_use_1, 
                                                     similarity_local_score*lr_to_be_use_2, 
                                                     int(len(tracin_local_score)/args.fracinv))
 
-                    # for train_ind in range(4):
-                    #     original_tokens = inputs["input_ids"].cpu().numpy()[train_ind]
-                    #     original_sentence = self.tokenizer.decode(original_tokens, skip_special_tokens=True)
-                    #     print("\n" + "-"*50)
-                    #     print("Training Candidate {}, Score={}:".format(train_ind, tracin_local_score[train_ind]))
-                    #     print(original_sentence)
-                    #     print("-"*50)
-
                     inputs['input_ids'] = inputs['input_ids'][selected_ind]
                     inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
                     inputs['labels'] = inputs['labels'][selected_ind]
+
+                    print('Total Extra Time for GradSelection: ', time.time()-start_time)
+
 
                 ##### ***************************************** #####
-
-                elif args.method == 'TracIN-AdaptiveSelect-PerBatch-interact':
-                    
-                    tracin_local_score, similarity_local_score = compute_TracIN_GC_per_iter(
-                            model, device=args.device, batch_data=inputs, validation_loader=eval_dataloader, optimizer=self.optimizer, 
-                            trainable_layers=trainable_layers)
-
-                    lr = 1
-                    lr_to_be_use_1, lr_to_be_use_2 = lr, lr**2
-                    
-                    selected_ind = greedy_selection(tracin_local_score*lr_to_be_use_1, 
-                                                    similarity_local_score*lr_to_be_use_2, 
-                                                    int(len(tracin_local_score)/args.fracinv))
-
-                    inputs['input_ids'] = inputs['input_ids'][selected_ind]
-                    inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
-                    inputs['labels'] = inputs['labels'][selected_ind]
-
-
                 elif args.method == "GradNorm":
 
                     tracin_local_score, similarity_local_score = compute_TracIN_GC_per_iter(
@@ -399,24 +383,17 @@ class GCTrainer(Trainer):
                     inputs['input_ids'] = inputs['input_ids'][selected_ind]
                     inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
                     inputs['labels'] = inputs['labels'][selected_ind]
-
+                    
                 elif args.method == "MaxLoss":
 
-                    import copy
-
                     with torch.no_grad():
-
                         losses = []
-
                         for i in range(self._train_batch_size):
-                            inputs_ind = copy.deepcopy(inputs)
-                            inputs_ind['input_ids'] = inputs['input_ids'][[i]]
-                            inputs_ind['attention_mask'] = inputs['attention_mask'][[i]]
-                            inputs_ind['labels'] = inputs['labels'][[i]]
-
-                            outputs = model(**inputs_ind)
+                            shift_ids = inputs['input_ids'][[i]]
+                            shift_labels = inputs['labels'][[i]]
+                            outputs = model(shift_ids, labels=shift_labels)
                             loss = outputs.loss
-                            losses.append(-loss.item())
+                            losses.append(loss.item())
 
                     selected_ind = greedy_selection(np.array(losses), 
                                                     np.zeros((len(losses), len(losses))), 
@@ -425,6 +402,97 @@ class GCTrainer(Trainer):
                     inputs['input_ids'] = inputs['input_ids'][selected_ind]
                     inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
                     inputs['labels'] = inputs['labels'][selected_ind]
+
+
+                ##### ***************************************** #####
+                elif args.method == "SBERT":
+
+                    X_str = []
+                    for j, indices in enumerate( inputs['input_ids'] ):
+                        # print('Example {}'.format(j))
+                        output = self.tokenizer.decode(indices, add_special_tokens=False)
+                        # print('')
+                        # print('******** Train Example starts ********')
+                        # print(output)
+                        # print('******** Train Example ends ********')
+                        X_str.append(output)
+
+                    X_val_str = []
+                    for _, val_inputs in enumerate(eval_dataloader):
+                        for j, indices in enumerate( val_inputs['input_ids'] ):
+                            # print('Example {}'.format(j))
+                            output = self.tokenizer.decode(indices, add_special_tokens=False)
+                            # print('')
+                            # print('******** Val Example starts ********')
+                            # print(output)
+                            # print('******** Val Example ends ********')
+                            X_val_str.append(output)
+
+                    embedding_train = emb_model.encode(X_str)
+                    embedding_val = emb_model.encode(X_val_str)
+
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    similarity_score = cosine_similarity(embedding_train, embedding_val)
+                    similarity_score = np.mean(similarity_score, axis=1)
+
+                    selected_ind = greedy_selection(similarity_score, 
+                                                    np.zeros((len(similarity_score), len(similarity_score))),
+                                                    int(len(similarity_score)/2))
+
+                    inputs['input_ids'] = inputs['input_ids'][selected_ind]
+                    inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
+                    inputs['labels'] = inputs['labels'][selected_ind]
+
+
+                ##### ***************************************** #####
+                elif args.method == "RHOLoss":
+
+                    with torch.no_grad():
+                        losses = []
+                        for i in range(self._train_batch_size):
+                            shift_ids = inputs['input_ids'][[i]]
+                            shift_labels = inputs['labels'][[i]]
+                            outputs = model(shift_ids, labels=shift_labels)
+                            loss = outputs.loss
+                            losses.append(loss.item())
+
+                    X_str = []
+                    for j, indices in enumerate( inputs['input_ids'] ):
+                        output = self.tokenizer.decode(indices, add_special_tokens=False)
+                        X_str.append(output)
+
+                    ref_losses = []
+                    for text in X_str:
+
+                        # Tokenize the input and target text
+                        input_tokens = ref_tokenizer(text, return_tensors="pt")
+
+                        # Ensure the input and target tokens are the same length
+                        input_ids = input_tokens["input_ids"]
+
+                        # Shift the target ids to the right by one
+                        shift_ids = input_ids[:, :-1].contiguous()
+                        shift_labels = input_ids[:, 1:].contiguous()
+
+                        shift_ids = shift_ids.to(args.device)
+                        shift_labels = shift_labels.to(args.device)
+
+                        with torch.no_grad():
+                            outputs = ref_model(shift_ids, labels=shift_labels)
+                            loss = outputs.loss
+                            ref_losses.append(loss.item())
+
+                    rho_losses = np.array(losses) - np.array(ref_losses)
+
+                    selected_ind = greedy_selection(rho_losses, 
+                                                    np.zeros((len(rho_losses), len(rho_losses))),
+                                                    int(len(rho_losses)/2))
+
+                    inputs['input_ids'] = inputs['input_ids'][selected_ind]
+                    inputs['attention_mask'] = inputs['attention_mask'][selected_ind]
+                    inputs['labels'] = inputs['labels'][selected_ind]
+
+
 
 
                 if self.args.include_num_input_tokens_seen:
@@ -456,14 +524,25 @@ class GCTrainer(Trainer):
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                with self.accelerator.accumulate(model):
-                    tr_loss_step = self.training_step(model, inputs)
 
-                if (
-                    args.logging_nan_inf_filter
-                    and not is_torch_tpu_available()
-                    and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                ):
+                ##### ***************************************** #####
+                ##### Training Step #####
+                # For GREATS, while we can save the fwd and bwd pass by using the one from ghost,
+                # it does not seem to be working with the current implementation of the gradient accumulation.
+                # So here we just do another fwd and bwd pass over the selected data points for clean implementation.
+                if True:
+                    with self.accelerator.accumulate(model):
+                        tr_loss_step = self.training_step(model, inputs)
+                else:
+                    selected_loss.backward()
+                    tr_loss_step = selected_loss.detach()
+
+                print('tr_loss_step', tr_loss_step)
+
+
+                if (args.logging_nan_inf_filter
+                    and not False
+                    and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))):
                     # if loss is nan or inf simply add the average of previous logged losses
                     tr_loss += tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
                 else:
@@ -475,12 +554,10 @@ class GCTrainer(Trainer):
                     steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
                 )
 
-                if (
-                    total_batched_samples % args.gradient_accumulation_steps == 0
+                if (total_batched_samples % args.gradient_accumulation_steps == 0
                     or
                     # last step in epoch but step is always smaller than gradient_accumulation_steps
-                    is_last_step_and_steps_less_than_grad_acc
-                ):
+                    is_last_step_and_steps_less_than_grad_acc):
                     # the `or` condition of `is_last_step_and_steps_less_than_grad_acc` is not covered
                     # in accelerate. So, explicitly enable sync gradients to True in that case.
                     if is_last_step_and_steps_less_than_grad_acc:
@@ -489,7 +566,6 @@ class GCTrainer(Trainer):
                     # Gradient clipping
                     if args.max_grad_norm is not None and args.max_grad_norm > 0:
                         # deepspeed does its own clipping
-
                         if is_sagemaker_mp_enabled() and args.fp16:
                             self.optimizer.clip_master_grads(args.max_grad_norm)
                         elif self.use_apex:
@@ -517,7 +593,6 @@ class GCTrainer(Trainer):
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
 
-                    # self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
@@ -527,7 +602,7 @@ class GCTrainer(Trainer):
                 ##### ***************************************** #####
                 ##### Add Evaluation #####
                 # Save the results every 5 steps
-                if total_batched_samples == 1 or total_batched_samples % 50 == 0:
+                if total_batched_samples % 64 == 0:
                             
                     #### Evaluate on validation and test data
                     model.eval()
@@ -540,6 +615,8 @@ class GCTrainer(Trainer):
                         losses.append(loss.item())
 
                     try:
+                        # filtering out the nan values in the losses
+                        losses = [loss for loss in losses if not math.isnan(loss)]
                         eval_loss = np.mean(losses)
                         eval_perplexity = math.exp(eval_loss)
                     except OverflowError:
@@ -548,7 +625,7 @@ class GCTrainer(Trainer):
                     print('')
                     logger.info(f" total steps {total_batched_samples}: eval_perplexity: {eval_perplexity} eval_loss: {eval_loss}")
 
-                    test_dataloader = self.get_gc_eval_dataloader(self.test_dataset, val_batchsize=1)
+                    test_dataloader = self.get_gc_eval_dataloader(self.test_dataset, val_batchsize=10)
 
                     losses = []
                     for step, batch in enumerate(test_dataloader):
@@ -556,24 +633,11 @@ class GCTrainer(Trainer):
                             outputs = model(**batch)
                         loss = outputs.loss
                         losses.append(loss.item())
+                        if step == 10:
+                            break
 
-                        # Print out test examples
-                        test_logits = outputs.logits
-                        batch_predictions = torch.argmax(test_logits, dim=-1)
-                        original_tokens = batch["input_ids"].cpu().numpy()[0]
-                        original_sentence = self.tokenizer.decode(original_tokens, skip_special_tokens=True)
-                        predicted_tokens = batch_predictions[0].cpu().numpy()
-                        predicted_sentence = self.tokenizer.decode(predicted_tokens, skip_special_tokens=True)
-
-                        print("\n" + "-"*50)
-                        print("Test Example {}, Loss={}:".format(step, loss.item()))
-                        print(original_sentence)
-                        print("-"*50)
-                        print("Predicted Sentence:")
-                        print(predicted_sentence)
-                        print("-"*50 + "\n")
-                        
                     try:
+                        losses = [loss for loss in losses if not math.isnan(loss)]
                         test_loss = np.mean(losses)
                         test_perplexity = math.exp(test_loss)
                     except OverflowError:
@@ -581,65 +645,21 @@ class GCTrainer(Trainer):
 
                     logger.info(f" total steps {total_batched_samples}: test_perplexity: {test_perplexity} test_loss: {test_loss}")
 
-
-
-                    # test_dataloader = self.get_gc_eval_dataloader(self.test_dataset, val_batchsize=1)
-
-                    # for j, batch in enumerate(test_dataloader):
-
-                    #     if j == 20:
-                    #         break
-
-                    #     with torch.no_grad():
-                    #         outputs = model(**batch)
-
-                    #     test_logits = outputs.logits
-                    #     batch_predictions = torch.argmax(test_logits, dim=-1)
-
-                    #     original_tokens = batch["input_ids"].cpu().numpy()[0]
-                    #     original_sentence = self.tokenizer.decode(original_tokens, skip_special_tokens=True)
-
-                    #     predicted_tokens = batch_predictions[0].cpu().numpy()
-                    #     predicted_sentence = self.tokenizer.decode(predicted_tokens, skip_special_tokens=True)
-
-                    #     print("\n" + "-"*50)
-                    #     print("Test Example {}:".format(j))
-                    #     print(original_sentence)
-                    #     print("-"*50)
-                    #     print("Predicted Sentence:")
-                    #     print(predicted_sentence)
-                    #     print("-"*50 + "\n")
-
-
-                    if self.test_dataset_withexp is not None:
-
-                        test_dataloader_withexp = self.get_gc_eval_dataloader(self.test_dataset_withexp, val_batchsize=1)
-
-                        losses = []
-                        for step, batch in enumerate(test_dataloader_withexp):
-                            with torch.no_grad():
-                                outputs = model(**batch)
-                            loss = outputs.loss
-                            losses.append(loss.item())
-
-                        try:
-                            test_loss_withexp = np.mean(losses)
-                            test_perplexity_withexp = math.exp(test_loss_withexp)
-                        except OverflowError:
-                            test_perplexity_withexp = float("inf")
-
-                        logger.info(f" total steps {total_batched_samples}: test_perplexity_withexp: {test_perplexity_withexp} test_loss_withexp: {test_loss_withexp}")
-
-
-
                     #### For MMLU dataset, the choice of multiple answers are ["A", "B", "C", "D"]
-                    choices = ["A", "B", "C", "D"]
-                    answer_choice_ids = [self.tokenizer.encode(" " + answer_choice, add_special_tokens=False)[-1] for answer_choice in choices]
+                    acc = None
+                    if self.args.analysis_dataset == "mmlu":
+                        choices = ["A", "B", "C", "D"]
+                        answer_choice_ids = [self.tokenizer.encode(" " + answer_choice, add_special_tokens=False)[-1] for answer_choice in choices]
 
-                    from less.train.mmlu_eval import compute_accuracy
-                    cors, acc, all_probs = compute_accuracy(args, model, self.tokenizer, answer_choice_ids=answer_choice_ids)
+                        from less.train.mmlu_eval import compute_accuracy
+                        cors, acc, all_probs = compute_accuracy(args, model, self.tokenizer, answer_choice_ids=answer_choice_ids)
 
-                    logger.info(f" total steps {total_batched_samples}: test_acc: {acc}")
+                        logger.info(f" total steps {total_batched_samples}: test_acc: {acc}")
+                    
+                    elif self.args.analysis_dataset == "tydiqa" and total_batched_samples % 100 == 0 and "Mistral" in args.result_dir and total_batched_samples > 1900:
+                        from less.train.tydiqa_eval import compute_accuracy
+                        acc = compute_accuracy(args, model, self.tokenizer)
+                        logger.info(f" total steps {total_batched_samples}: test_acc: {acc}")
 
                     #### Save Results
                     file_path = args.result_dir
@@ -663,11 +683,6 @@ class GCTrainer(Trainer):
                         "step": total_batched_samples
                     }
 
-                    if self.test_dataset_withexp is not None:
-                        new_entry[test_perplexity_withexp] = test_perplexity_withexp.item() if isinstance(test_perplexity_withexp, torch.Tensor) else test_perplexity_withexp
-                        new_entry[test_loss_withexp] = test_loss_withexp.item() if isinstance(test_loss_withexp, torch.Tensor) else test_loss_withexp
-
-
                     # Append the new data entry to the list
                     data.append(new_entry)
 
@@ -678,28 +693,28 @@ class GCTrainer(Trainer):
                 ##### ***************************************** #####
 
 
-            if step < 0:
-                logger.warning(
-                    "There seems to be not a single sample in your epoch_iterator, stopping training at step"
-                    f" {self.state.global_step}! This is expected if you're using an IterableDataset and set"
-                    f" num_steps ({max_steps}) higher than the number of available samples."
-                )
-                self.control.should_training_stop = True
+            # if step < 0:
+            #     logger.warning(
+            #         "There seems to be not a single sample in your epoch_iterator, stopping training at step"
+            #         f" {self.state.global_step}! This is expected if you're using an IterableDataset and set"
+            #         f" num_steps ({max_steps}) higher than the number of available samples."
+            #     )
+            #     self.control.should_training_stop = True
 
-            self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
+            # self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
+            # self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
 
-            if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
-                if is_torch_tpu_available():
-                    # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
-                    xm.master_print(met.metrics_report())
-                else:
-                    logger.warning(
-                        "You enabled PyTorch/XLA debug metrics but you don't have a TPU "
-                        "configured. Check your training configuration if this is unexpected."
-                    )
-            if self.control.should_training_stop:
-                break
+            # if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
+            #     if False:
+            #         # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
+            #         xm.master_print(met.metrics_report())
+            #     else:
+            #         logger.warning(
+            #             "You enabled PyTorch/XLA debug metrics but you don't have a TPU "
+            #             "configured. Check your training configuration if this is unexpected."
+            #         )
+            # if self.control.should_training_stop:
+            #     break
 
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
@@ -708,7 +723,7 @@ class GCTrainer(Trainer):
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
             # Wait for everyone to get here so we are sure the model has been saved by process 0.
-            if is_torch_tpu_available():
+            if False:
                 xm.rendezvous("load_best_model_at_end")
             elif args.parallel_mode == ParallelMode.DISTRIBUTED:
                 dist.barrier()

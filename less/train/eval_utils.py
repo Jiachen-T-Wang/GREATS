@@ -49,6 +49,7 @@ def generate_completions(model, tokenizer, prompts, batch_size=1, stop_id_sequen
                 input_ids=batch_input_ids,
                 attention_mask=attention_mask,
                 stopping_criteria=[KeyWordsCriteria(stop_id_sequences)] if stop_id_sequences else None,
+                max_new_tokens = 20, 
                 **generation_kwargs
             )
         
@@ -96,35 +97,6 @@ def generate_completions(model, tokenizer, prompts, batch_size=1, stop_id_sequen
 
 
 @torch.no_grad()
-def print_predicted_sentences(prompts, model, tokenizer, batch_size=1, add_special_tokens=True):
-
-    for i in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[i: i+batch_size]
-        tokenized_prompts = tokenizer(batch_prompts, padding="longest", return_tensors="pt", add_special_tokens=add_special_tokens)
-        batch_input_ids = tokenized_prompts.input_ids
-        attention_mask = tokenized_prompts.attention_mask
-
-        if model.device.type == "cuda":
-            batch_input_ids = batch_input_ids.cuda()
-            attention_mask = attention_mask.cuda()
-
-        outputs = model(input_ids=batch_input_ids, attention_mask=attention_mask)
-        batch_logits = outputs.logits
-        batch_predictions = torch.argmax(batch_logits, dim=-1)
-
-        for j in range(len(batch_prompts)):
-            predicted_tokens = batch_predictions[j].cpu().numpy()
-            predicted_sentence = tokenizer.decode(predicted_tokens, skip_special_tokens=True)
-            print("\n" + "-"*50)
-            print(f"Prompt:")
-            print(batch_prompts[j])
-            print("-"*50)
-            print(f"Predicted Sentence:")
-            print(predicted_sentence)
-            print("-"*50 + "\n")
-
-
-@torch.no_grad()
 def get_next_word_predictions(model, tokenizer, prompts, 
                               candidate_token_ids=None, 
                               batch_size=1, 
@@ -167,8 +139,6 @@ def get_next_word_predictions(model, tokenizer, prompts,
 
         if not disable_tqdm:
             progress.update(len(batch_prompts))
-
-    print_predicted_sentences(prompts[:10], model, tokenizer)
 
     assert len(predictions) == len(prompts), "number of predictions should be equal to number of prompts"
     return predictions, probs

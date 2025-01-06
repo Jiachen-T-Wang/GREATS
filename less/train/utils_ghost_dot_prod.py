@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 import less
+import time
+
 
 def find_GClayers(module):
 
@@ -19,74 +21,127 @@ def find_GClayers(module):
     return GC_layers
 
 
-def compute_TracIN_GC_per_iter(model, device, batch_data, validation_loader, optimizer, trainable_layers):
 
-    per_val=False
-    return_tracin_and_similarity=True
+def compute_GradProd_GC_per_iter(model, device, batch_train, validation_loader, optimizer, trainable_layers, 
+                               per_val=False, return_tracin_and_similarity=True):
 
-    batch_size = batch_data['input_ids'].shape[0]
+    # Get first batch from validation loader
+    batch_val = next(iter(validation_loader))
 
-    optimizer.zero_grad()
-
-    ### Step1: take a random batch from the validation data. 
-
-    dLdZ_a_val_lst = []
-    for step, inputs in enumerate(validation_loader):
-
-        n_val = inputs['input_ids'].shape[0]
-
-        outputs = model(**inputs)
-        val_loss = outputs.loss
-        val_pre_acts = [layer.pre_activation for layer in trainable_layers]
-        Z_grad_val = torch.autograd.grad(val_loss, val_pre_acts, retain_graph=True)
-        assert len(trainable_layers) == len(Z_grad_val)
-        for layer, zgrad_val in zip(trainable_layers, Z_grad_val):
-            decompose_result = layer.pe_grad_gradcomp(zgrad_val, per_sample=True)
-            dLdZ_a_val_lst = update_list(dLdZ_a_val_lst, decompose_result)
-        break
+    # Get the batch size of the validation and training batches
+    val_bs = batch_val['input_ids'].shape[0]
+    train_bs = batch_train['input_ids'].shape[0]
 
     optimizer.zero_grad()
 
-    # Compute individual training loss
-    output_train = model(**batch_data)
-    train_loss = output_train.loss
-    mean_train_loss = train_loss.mean()
+    # Get maximum sequence length from both batches
+    max_seq_len = max(
+        batch_train['input_ids'].shape[1],
+        batch_val['input_ids'].shape[1]
+    )
+
+    # Pad training batch if needed
+    if batch_train['input_ids'].shape[1] < max_seq_len:
+        pad_length = max_seq_len - batch_train['input_ids'].shape[1]
+        batch_train = {
+            'input_ids': torch.nn.functional.pad(batch_train['input_ids'], (0, pad_length), value=0),
+            'attention_mask': torch.nn.functional.pad(batch_train['attention_mask'], (0, pad_length), value=0),
+            'labels': torch.nn.functional.pad(batch_train['labels'], (0, pad_length), value=-100)  # Use -100 for labels padding
+        }
+
+    # Pad validation batch if needed
+    if batch_val['input_ids'].shape[1] < max_seq_len:
+        pad_length = max_seq_len - batch_val['input_ids'].shape[1]
+        batch_val = {
+            'input_ids': torch.nn.functional.pad(batch_val['input_ids'], (0, pad_length), value=0),
+            'attention_mask': torch.nn.functional.pad(batch_val['attention_mask'], (0, pad_length), value=0),
+            'labels': torch.nn.functional.pad(batch_val['labels'], (0, pad_length), value=-100)  # Use -100 for labels padding
+        }
+
+    # Separate labels from inputs
+    combined_labels = torch.cat([batch_train['labels'], batch_val['labels']], dim=0)
+    combined_inputs = {
+        k: torch.cat([batch_train[k], batch_val[k]], dim=0) 
+        for k in batch_train.keys() if k != 'labels'  # Exclude labels
+    }
+    
+    # Free memory from individual batches
+    del batch_train, batch_val
+    torch.cuda.empty_cache()
+
+    # Forward pass without loss computation
+    outputs = model(**combined_inputs)
+    logits = outputs.logits  # Shape: [batch_size, seq_len, vocab_size]
+    
+    # Compute per-sample losses manually
+    loss_fct = torch.nn.CrossEntropyLoss(reduction='none')  # Use 'none' to get per-sample losses
+    # Reshape logits and labels for loss computation
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = combined_labels[..., 1:].contiguous()
+    # Compute loss for each position
+    per_position_loss = loss_fct(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1)
+    )
+    # Reshape to [batch_size, seq_len-1]
+    per_position_loss = per_position_loss.view(shift_labels.size())
+    # Mask out padding tokens (where labels == -100)
+    mask = (shift_labels != -100).float()
+    # Get per-sample loss by averaging over sequence length
+    loss = (per_position_loss * mask).sum(dim=-1) / mask.sum(dim=-1)
     
     pre_acts = [layer.pre_activation for layer in trainable_layers]
-    Z_grad = torch.autograd.grad(mean_train_loss, pre_acts, retain_graph=False)
+    
+    # Single backward pass using mean loss for gradient computation
+    Z_grad = torch.autograd.grad(loss.mean(), pre_acts, retain_graph=True)
 
     dLdZ_a_train_lst = []
+    dLdZ_a_val_lst = []
+    
     for layer, zgrad in zip(trainable_layers, Z_grad):
-        decompose_result = layer.pe_grad_gradcomp(zgrad, per_sample=True)
-        dLdZ_a_train_lst = update_list(dLdZ_a_train_lst, decompose_result)
 
-    # Compute TracIN score
-    tracin_local_score = np.zeros( (batch_size, n_val) ) if per_val else np.zeros(batch_size)
+        decompose_results = layer.pe_grad_gradcomp(zgrad, per_sample=True)
 
+        # Pre-allocate lists with known size
+        train_results = [None] * len(decompose_results)
+        val_results = [None] * len(decompose_results)
+
+        # Single loop with direct indexing
+        for i, (dLdZ, a) in enumerate(decompose_results):
+            # Use torch.split instead of slicing for better memory efficiency
+            dLdZ_train, dLdZ_val = torch.split(dLdZ, [train_bs, dLdZ.size(0) - train_bs])
+            a_train, a_val = torch.split(a, [train_bs, a.size(0) - train_bs])
+            
+            train_results[i] = (dLdZ_train, a_train)
+            val_results[i] = (dLdZ_val, a_val)
+
+        dLdZ_a_train_lst.extend(train_results)
+        dLdZ_a_val_lst.extend(val_results)
+
+
+    # Compute Gradient Dot-Product between training and validation batches
+    grad_dotproduct_score = np.zeros((train_bs, val_bs)) if per_val else np.zeros(train_bs)
+
+    # Compute pairwise similarity between training samples
     if return_tracin_and_similarity:
-        similarity_local_score = np.zeros( (batch_size, batch_size) )
+        similarity_local_score = np.zeros((train_bs, train_bs))
 
     assert len(dLdZ_a_train_lst) == len(dLdZ_a_val_lst)
-    for (dLdZ, a), (dLdZ_val, a_val) in zip(dLdZ_a_train_lst, dLdZ_a_val_lst):
 
-        dLdZ = dLdZ.detach()
-        a = a.detach()
+    for (dLdZ, a), (dLdZ_val, a_val) in zip(dLdZ_a_train_lst, dLdZ_a_val_lst):
 
         dot_prod = grad_dotprod(dLdZ, a, dLdZ_val, a_val)
 
         if per_val:
-            tracin_local_score += ((dot_prod).float()).cpu().detach().numpy()
+            grad_dotproduct_score += ((dot_prod).float()).cpu().detach().numpy()
         else:
-            tracin_local_score += ((dot_prod).mean(dim=1).float()).cpu().detach().numpy()
+            grad_dotproduct_score += ((dot_prod).mean(dim=1).float()).cpu().detach().numpy()
 
         if return_tracin_and_similarity:
             dot_prod = grad_dotprod(dLdZ, a, dLdZ, a)
             similarity_local_score += ((dot_prod).float()).cpu().detach().numpy()
 
-    if return_tracin_and_similarity:
-        return tracin_local_score, similarity_local_score
-    else:
-        return tracin_local_score
+    return grad_dotproduct_score, similarity_local_score
 
 
 
@@ -120,12 +175,17 @@ def grad_dotprod_non_sequential(A1, B1, A2, B2):
     return dot_prod
 
 
-def grad_dotprod_sequential(A1, B1, A2, B2):
+def grad_dotprod_sequential(A1, B1, A2, B2, chunk_size=1024):
 
     (b, t, p), (_, _, d) = A1.size(), B1.size()
     nval, _, _ = A2.size()
 
-    if 2*b*nval*t**2 < (b+nval)*p*d:
+    # if 2*b*nval*t**2 < (b+nval)*p*d:
+    if False:
+
+        """
+        This part is not used because it is slower than the case without chunking.
+        """
 
         A2, B2 = A2.transpose(-1, -2), B2.transpose(-1, -2)
 
@@ -137,8 +197,8 @@ def grad_dotprod_sequential(A1, B1, A2, B2):
         # Memory consumption: 2*b*nval*T^2
         # A_dotprod = torch.matmul(A1_expanded, A2_expanded) # Shape: [b, nval, T, T]
         # B_dotprod = torch.matmul(B1_expanded, B2_expanded) # Shape: [b, nval, T, T]
-        A_dotprod = _chunked_matmul(A1_expanded, A2_expanded, chunk_size=128)
-        B_dotprod = _chunked_matmul(B1_expanded, B2_expanded, chunk_size=128)
+        A_dotprod = _chunked_matmul(A1_expanded, A2_expanded, chunk_size=chunk_size)
+        B_dotprod = _chunked_matmul(B1_expanded, B2_expanded, chunk_size=chunk_size)
 
         return (A_dotprod * B_dotprod).sum(dim=(2, 3))
     

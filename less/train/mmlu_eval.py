@@ -53,7 +53,7 @@ def eval_hf_model_generate_ICL_prompts(args, model, tokenizer, dev_df, test_df, 
 
     subject = args.subject
 
-    args.use_chat_format = False
+    args.use_chat_format = True
     k = args.n_val
 
     prompts = []
@@ -62,8 +62,7 @@ def eval_hf_model_generate_ICL_prompts(args, model, tokenizer, dev_df, test_df, 
     
     for i in range(0, test_df.shape[0]):
         prompt_end = format_example(test_df, i, include_answer=False)
-        # train_prompt = gen_prompt(dev_df, subject, k)
-        train_prompt = ''
+        train_prompt = gen_prompt(dev_df, subject, k)
         prompt = train_prompt + prompt_end
 
         if args.use_chat_format:
@@ -79,8 +78,7 @@ def eval_hf_model_generate_ICL_prompts(args, model, tokenizer, dev_df, test_df, 
         # make sure every prompt is less than 2048 tokens
         while len(tokenized_prompt) > 512:
             k -= 1
-            # train_prompt = gen_prompt(dev_df, subject, k)
-            train_prompt = ''
+            train_prompt = gen_prompt(dev_df, subject, k)
             prompt = train_prompt + prompt_end
 
             if args.use_chat_format:
@@ -108,14 +106,22 @@ def compute_accuracy(args, model, tokenizer, answer_choice_ids, batch_size=1):
 
     test_df = get_mmlu_dataset_df(data_dir='./data',
                                  validation=False, 
-                                 k = 200, 
+                                 k = args.n_test, 
                                  subject = args.subject)
 
     prompts = eval_hf_model_generate_ICL_prompts(args, model, tokenizer, dev_df, test_df, batch_size=1)
 
-    print('*** Example ICL Prompt Starts ***')
-    print(prompts[0])
-    print('*** Example ICL Prompt Ends ***')
+    # for prompt in prompts:
+    #     print('')
+    #     print('*** ICL Prompt Starts ***')
+    #     print(prompt)
+    #     print('*** ICL Prompt Ends ***')
+
+    # # get the answer for all examples
+    # # adding a prefix space here, as that's expected from the prompt
+    # # TODO: should raise a warning if this returns more than one token
+    # answer_choice_ids = [tokenizer.encode(
+    #     " " + answer_choice, add_special_tokens=False)[-1] for answer_choice in choices]
 
     pred_indices, all_probs = get_next_word_predictions(
         model, tokenizer, prompts, candidate_token_ids=answer_choice_ids, return_token_predictions=False, batch_size=batch_size
@@ -132,11 +138,8 @@ def compute_accuracy(args, model, tokenizer, answer_choice_ids, batch_size=1):
     acc = np.mean(cors)
     cors = np.array(cors)
 
-    print('N Test = {}'.format(len(cors)))
-
     all_probs = np.array(all_probs)
     return cors, acc, all_probs
-
 
 
 

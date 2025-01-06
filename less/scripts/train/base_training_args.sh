@@ -26,10 +26,6 @@ export base_training_args="--do_train True \
 --save_strategy epoch \
 --lora True \
 --lora_r 128 \
---lora_alpha 1 \
 --lora_dropout 0.1 \
---lora_target_modules q_proj k_proj v_proj o_proj \
---learning_rate 2e-05 \
---gradient_accumulation_steps 1 \
 --fracinv 2.0 \
---n_test 50"
+--n_test 500"

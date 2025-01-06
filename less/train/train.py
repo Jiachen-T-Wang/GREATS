@@ -125,8 +125,11 @@ def main():
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
+
+
+
     ##### ***************************************** #####
-    ##### Change to make the model work with TracIN #####
+    ##### Change to make the model work with "Ghost Inner-product" #####
 
     def replace_Linear(module, last_layer_only=False):
         for layer_str in dir(module):
@@ -137,9 +140,7 @@ def main():
                 new_layer.weight = layer.weight
                 new_layer.bias = layer.bias
                 del layer
-                print('Found Linear Layer: {}'.format(layer_str))
                 setattr(module, layer_str, new_layer)
-                print('Replaced Linear Layer with GC: {} to {}'.format(layer_str, type(new_layer)))
 
         if not last_layer_only:
             if hasattr(module,'children'):
@@ -156,20 +157,14 @@ def main():
                                          device='cuda')
                 new_layer.weight = layer.weight
                 del layer
-                print('Found LoRA Layer: {}'.format(layer_str))
                 setattr(module, layer_str, new_layer)
-                print('Replaced LoRA Layer with GC: {} to {}'.format(layer_str, type(new_layer)))
 
         if hasattr(module,'children'):
             for immediate_child_module in module.children():
                 replace_LoRALinear(immediate_child_module)
 
-    # print('Original Model')
-    # print(model)
-
     if model_args.lora:
         replace_LoRALinear(model)
-        # replace_Linear(model)
     else:
         replace_Linear(model, last_layer_only=True)
 
@@ -177,11 +172,8 @@ def main():
         ##### Make the last layer trainable #####
         for param in model.base_model.model.lm_head.parameters():
             param.requires_grad = True
-        model.print_trainable_parameters()
         ##### ***************************************** #####
 
-    # print('Model After replacing with GC layer')
-    # print(model)
     model.print_trainable_parameters()
     ##### ***************************************** #####
 
@@ -191,92 +183,59 @@ def main():
     if "dataset" in train_dataset.features:
         train_dataset = train_dataset.remove_columns(["dataset", "id", "messages"])            
 
-    for index in random.sample(range(len(train_dataset)), 1):
-        logger.info(f"Sample {index} of the training set.")
-
-
     ##### ***************************************** #####
     ##### Make validation and test set #####
     ##### Choice of validation: ["bbh", "tydiqa", "mmlu"]
-    ##### TODO: extend to other datasets
     from less.data_selection.get_validation_dataset import get_dataset
-    training_args.analysis_dataset = "mmlu"
     data_args.data_dir = './data'
 
-    if training_args.n_val == 5:
-        training_args.withexp = True
-    else:
-        training_args.withexp = False
-        training_args.n_val = 5
-
-    analysis_dataset = None
-
-    if True:
-        analysis_dataset = get_dataset(training_args.analysis_dataset,
-                                        data_dir=data_args.data_dir,
-                                        tokenizer=tokenizer,
-                                        max_length=data_args.max_seq_length, 
-                                        validation=True, 
-                                        k=5, 
-                                        subject=training_args.subject,
-                                        withexp=training_args.withexp,
-                                        withexpfour=False)
-            
-    print('Validation Set')
-    get_data_statistics(analysis_dataset)
+    analysis_dataset = get_dataset(training_args.analysis_dataset,
+                                    data_dir=data_args.data_dir,
+                                    tokenizer=tokenizer,
+                                    max_length=data_args.max_seq_length, 
+                                    validation=True, 
+                                    k = training_args.n_val, 
+                                    subject = training_args.subject)
 
     test_dataset = get_dataset(training_args.analysis_dataset,
                                 data_dir=data_args.data_dir,
                                 tokenizer=tokenizer,
                                 max_length=data_args.max_seq_length, 
                                 validation=False, 
-                                k = 500, 
-                                subject = training_args.subject, 
-                                withexp=False,
-                                withexpfour=False
-                                )
-    print('Test Set')
-    get_data_statistics(test_dataset)
-
-    if training_args.subject in ["high_school_mathematics", 'sociology']:
-        test_dataset_withexp = get_dataset(training_args.analysis_dataset,
-                                           data_dir=data_args.data_dir,
-                                           tokenizer=tokenizer,
-                                           max_length=data_args.max_seq_length, 
-                                           validation=False, 
-                                           k = 10, 
-                                           subject = training_args.subject, 
-                                           withexp=True, 
-                                           withexpfour=False)
-        print('Test Set (with explanation)')
-        get_data_statistics(test_dataset_withexp)
-    else:
-        test_dataset_withexp = None
-
+                                k = training_args.n_test, 
+                                subject = training_args.subject)
     ##### ***************************************** #####
 
-
-    training_args.result_dir = '/scratch/gpfs/tw8948/LESS/results/'
-
-    if training_args.method == 'TracIN-AdaptiveSelect-PerBatch':
+    training_args.result_dir = '/scratch/gpfs/tw8948/GREATS_Result/'
+    
+    if training_args.method == 'GREATS':
         training_args.per_device_train_batch_size = int( training_args.per_device_train_batch_size * training_args.fracinv )
 
-    training_args.result_dir = training_args.result_dir + '{}-BS{}-TrainPct{}-{}-NVAL{}-NTEST{}'.format(
-        training_args.method, training_args.per_device_train_batch_size, data_args.percentage, training_args.subject, 
-        5, training_args.n_test)
-    
-    if training_args.withexp:
-        training_args.result_dir = training_args.result_dir + '-WithExpFour'
+    if "Mistral-7B" in model_args.model_name_or_path:
+        training_args.result_dir = training_args.result_dir + 'Mistral-7B'
+    elif "Llama-2" in model_args.model_name_or_path:
+        training_args.result_dir = training_args.result_dir + 'Llama-2'
+
+    training_args.result_dir = training_args.result_dir + '-{}-BS{}-TrainPct{}-{}-NVAL{}-NTEST{}'.format(
+        training_args.method, 
+        training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps, 
+        data_args.percentage, 
+        training_args.subject, 
+        training_args.n_val, 
+        training_args.n_test)
     
     # Add LoRA parameters
     training_args.result_dir = training_args.result_dir + '-LoRA_R{}_Alpha{}_Dropout{}'.format(
         model_args.lora_r, model_args.lora_alpha, model_args.lora_dropout,
     )
     
-    if training_args.method == 'TracIN-AdaptiveSelect-PerBatch':
+    training_args.result_dir = training_args.result_dir + '-LR{}'.format(training_args.learning_rate)
+    training_args.result_dir = training_args.result_dir + '-Seed{}'.format(training_args.seed)
+    
+    if training_args.method == 'GREATS':
         training_args.result_dir = training_args.result_dir + '-FRACINV{}'.format(training_args.fracinv)
 
-    training_args.result_dir = training_args.result_dir + '_results_nochat_noins_noicl.json'
+    training_args.result_dir = training_args.result_dir + '_results.json'
 
     if os.path.exists( training_args.result_dir ):
         os.remove( training_args.result_dir )
@@ -288,11 +247,9 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=analysis_dataset,
         test_dataset=test_dataset, 
-        test_dataset_withexp=test_dataset_withexp,
         tokenizer=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model, padding="longest")
     )
-
 
     # Training
     train_result = trainer.train()
@@ -312,9 +269,6 @@ def main():
             training_args.output_dir, "pytorch_model_fsdp.bin")
         os.remove(pytorch_model_path) if os.path.exists(
             pytorch_model_path) else None
-
-
-
 
 if __name__ == "__main__":
     main()

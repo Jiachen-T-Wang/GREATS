@@ -1,2 +1,6 @@
+torch
 peft==0.7.1
 transformers==4.36.2
+datasets
+accelerate==0.28.0
+wandb

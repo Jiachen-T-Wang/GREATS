@@ -53,6 +53,8 @@ def get_bbh_dataset(data_dir: str,
                     max_length: int,
                     use_chat_format: bool = True,
                     chat_format: str = "tulu",
+                    validation=False,
+                    k = 5,
                     **kwargs):
     """
     Get the bbh dataset in the instruction tuning format. Each example is formatted as follows: 
@@ -102,7 +104,7 @@ def get_bbh_dataset(data_dir: str,
                 string += "\n\n"
             return string
 
-        for i in range(len(exes)):
+        for i in range(k):
             target_ex = exes[i]
             other_exes = exes[:i] + exes[i+1:]
             icl = form_icl(other_exes)
@@ -119,12 +121,83 @@ def get_bbh_dataset(data_dir: str,
                     f"{question}" + "\nA:"
             full_input_ids, labels, attention_mask = tokenize(
                 tokenizer, question, answer, max_length, print_ex=True if i == 0 else False)
-            
             dataset["input_ids"].append(full_input_ids)
             dataset["labels"].append(labels)
             dataset["attention_mask"].append(attention_mask)
 
     dataset = Dataset.from_dict(dataset)
+    return dataset
+
+def get_tydiqa_dataset_df(data_dir: str,
+                       use_chat_format: bool = True,
+                       chat_format: str = "tulu",
+                       zh: bool = False,
+                       validation=False,
+                       k = 5):
+    encoding_templates_with_context = {
+        "english": ("Answer the following question based on the information in the given passage.", "Passage:", "Question:", "Answer:"),
+        "arabic": ("أجب على السؤال التالي بناءً على المعلومات في المقطع المعطى.", "المقطع:", "السؤال:", "الإجابة:"),
+        "bengali": ("প্রদত্ত অধ্যায়ের তথ্যের উপর ভিত্তি করে নিম্নলিখিত প্রশ্নের উত্তর দিন।", "অধ্যায়:", "প্রশ্ন:", "উত্তর:"),
+        "finnish": ("Vastaa seuraavaan kysymykseen annetun kappaleen tiedon perusteella.", "Kappale:", "Kysymys:", "Vastaus:"),
+        "indonesian": ("Jawab pertanyaan berikut berdasarkan informasi di bagian yang diberikan.", "Bagian:", "Pertanyaan:", "Jawaban:"),
+        "korean": ("주어진 문단의 정보에 기반하여 다음 질문에 답하십시오.", "문단:", "질문:", "답변:"),
+        "russian": ("Ответьте на следующий вопрос на основе информации в данном отрывке.", "Отрывок:", "Вопрос:", "Ответ:"),
+        "swahili": ("Jibu swali lifuatalo kulingana na habari kwenye kifungu kilichotolewa.", "Kifungu:", "Swali:", "Jibu:"),
+        "telugu": ("ఇచ్చిన పేరాలోని సమాచారం ఆధారంగా కింది ప్రశ్నకు సమాధానం ఇవ్వండి.", "పేరా:", "ప్రశ్న:", "సమాధానం:")
+    }
+
+    # Chinese validation examples
+    if zh:
+        for lang in encoding_templates_with_context:
+            encoding_templates_with_context[lang] = (
+                "根据所给文章中的信息回答以下问题。", "文章:", "问题:", "答案:")
+
+    file_name = "tydiqa-one-shot-zh.json" if zh else "tydiqa-goldp-v1.1-dev.json"
+    # grad-tracin/LESS/data/eval/tydiqa/dev/tydiqa-goldp-v1.1-dev.json
+    if validation:
+        file = os.path.join(f"{data_dir}/eval/tydiqa/dev", file_name)
+    else:
+        file = os.path.join(f"{data_dir}/eval/tydiqa/test", file_name)
+
+    examples = json.load(open(file, "r"))
+    # shuffle(examples["data"])
+    import random
+    random.seed(42)
+    examples_data = examples["data"]
+    random.shuffle(examples_data)
+
+    dataset = []
+
+    for i, example in enumerate(examples_data):
+        if i == k:
+            break
+        ID = example["paragraphs"][0]["qas"][0]['id']
+        lang = ID.split("-")[0]
+
+        context = example["paragraphs"][0]["context"]
+        question = example["paragraphs"][0]["qas"][0]["question"]
+        answer = example["paragraphs"][0]["qas"][0]["answers"][0]["text"]
+
+        prompt, p_template, q_template, a_template = encoding_templates_with_context[lang]
+        prompt += p_template + " " + \
+            context + "\n" + q_template + \
+            " " + question + "\n"
+        answer = " " + answer
+        if use_chat_format:
+            if chat_format == "tulu":
+                prompt = "<|user|>\n" + prompt + "<|assistant|>\n" + a_template
+            else:
+                prompt = f"<s> {B_INST} {prompt} {E_INST} {a_template}"
+        else:
+            prompt = prompt + a_template
+        if validation:
+            print("########## Example {} ##########".format(i))
+            print(prompt)
+            print(answer)
+            dataset.append((prompt, answer, lang))
+        else:
+            dataset.append((prompt, answer, lang))
+
     return dataset
 
 
@@ -134,6 +207,8 @@ def get_tydiqa_dataset(data_dir: str,
                        use_chat_format: bool = True,
                        chat_format: str = "tulu",
                        zh: bool = False,
+                       validation=False,
+                       k = 5,
                        **kwargs) -> Dataset:
     """
     Get the tydiqa dataset in the instruction tuning format. Each example is formatted as follows:  
@@ -181,19 +256,41 @@ def get_tydiqa_dataset(data_dir: str,
             encoding_templates_with_context[lang] = (
                 "根据所给文章中的信息回答以下问题。", "文章:", "问题:", "答案:")
 
-    file_name = "tydiqa-one-shot-zh.json" if zh else "tydiqa-one-shot.json"
-    file = os.path.join(f"{data_dir}/eval/tydiqa", file_name)
+    file_name = "tydiqa-one-shot-zh.json" if zh else "tydiqa-goldp-v1.1-dev.json"
+    # grad-tracin/LESS/data/eval/tydiqa/dev/tydiqa-goldp-v1.1-dev.json
+    if validation:
+        file = os.path.join(f"{data_dir}/eval/tydiqa/dev", file_name)
+    else:
+        file = os.path.join(f"{data_dir}/eval/tydiqa/test", file_name)
 
     examples = json.load(open(file, "r"))
     dataset = {"input_ids": [], "attention_mask": [], "labels": []}
+    
+    import random
+    random.seed(42)
 
-    for i, lang in enumerate(examples):
-        example = examples[lang][0]
+    
+    examples_data = examples["data"]
+    random.shuffle(examples_data)
+
+
+
+
+    for i, example in enumerate(examples_data):
+        if i == k:
+            break
+        ID = example["paragraphs"][0]["qas"][0]['id']
+        lang = ID.split("-")[0]
+
+        context = example["paragraphs"][0]["context"]
+        question = example["paragraphs"][0]["qas"][0]["question"]
+        answer = example["paragraphs"][0]["qas"][0]["answers"][0]["text"]
+
         prompt, p_template, q_template, a_template = encoding_templates_with_context[lang]
         prompt += p_template + " " + \
-            format(example["context"]) + "\n" + q_template + \
-            " " + format(example["question"]) + "\n"
-        answer = " " + format(example["answers"][0]["text"])
+            context + "\n" + q_template + \
+            " " + question + "\n"
+        answer = " " + answer
         if use_chat_format:
             if chat_format == "tulu":
                 prompt = "<|user|>\n" + prompt + "<|assistant|>\n" + a_template
@@ -201,11 +298,22 @@ def get_tydiqa_dataset(data_dir: str,
                 prompt = f"<s> {B_INST} {prompt} {E_INST} {a_template}"
         else:
             prompt = prompt + a_template
-        full_input_ids, labels, attention_mask = tokenize(
-            tokenizer, prompt, answer, max_length, print_ex=True)
+        if validation:
+            print("########## Example {} ##########".format(i))
+            print(prompt)
+            print(answer)
+            full_input_ids, labels, attention_mask = tokenize(
+                tokenizer, prompt, answer, max_length, print_ex=False)
+            print(len(full_input_ids))
+            
+            print("################################")
+        else:
+            full_input_ids, labels, attention_mask = tokenize(
+                tokenizer, prompt, answer, max_length, print_ex=False)
         dataset["input_ids"].append(full_input_ids)
         dataset["labels"].append(labels)
         dataset["attention_mask"].append(attention_mask)
+
     dataset = Dataset.from_dict(dataset)
     return dataset
 
@@ -251,17 +359,16 @@ def get_mmlu_dataset_df(data_dir: str,
 
 
 
-# withexp=True: load validation data with explanation. 
+
+
 def get_mmlu_dataset(data_dir: str,
                      tokenizer: PreTrainedTokenizerBase,
                      max_length: int,
-                     use_chat_format=False,
+                     use_chat_format=True,
                      chat_format="tulu",
                      validation=False,
                      k = 5,
                      subject = 'abstract_algebra', 
-                     withexp=False,
-                     withexpfour=False,
                      **kwargs):
     """
     Get the MMLU dataset in the instruction tuning format. Each example is formatted as follows:
@@ -286,11 +393,14 @@ def get_mmlu_dataset(data_dir: str,
     Returns:
         Dataset: The tokenized dataset containing input_ids, attention_mask, and labels.
     """
-
-    if withexpfour:
-        withexp = False
-
     mmlu_data_dir = os.path.join(data_dir, "eval", "mmlu")
+    # subjects = sorted(
+    #     [
+    #         f.split("_test.csv")[0]
+    #         for f in os.listdir(os.path.join(mmlu_data_dir, "test"))
+    #         if "_test.csv" in f
+    #     ]
+    # )
     subjects = [subject]
 
     def format_subject(subject):
@@ -301,65 +411,35 @@ def get_mmlu_dataset(data_dir: str,
         return s
 
     def gen_prompt(train_df, subject, i=0):
-
-        # if validation and (withexp or withexpfour):
-        #     prompt = "The following are multiple choice questions (with answers and explanations) about {}.\n\n".format(
-        #         format_subject(subject)
-        #     )
-        # else:
-        #     prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(
-        #         format_subject(subject)
-        #     )
-
-        prompt = ''
-        prompt += format_example(train_df, i)
+        prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(
+            format_subject(subject)
+        )
+        prompt += format_example(train_df, i, include_answer=False)
         return prompt
 
-    def format_example(df, idx):
+    def format_example(df, idx, include_answer=True):
         choices = ["A", "B", "C", "D"]
         prompt = df.iloc[idx, 0]
-
-        for j in range(4):
+        k = df.shape[1] - 2
+        for j in range(k):
             prompt += "\n{}. {}".format(choices[j], df.iloc[idx, j + 1])
         prompt += "\nAnswer:"
         return prompt
 
     dataset = {"input_ids": [], "attention_mask": [], "labels": []}
-
     for subject in subjects:
 
-        if validation and (not withexp) and (not withexpfour):
-            dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "dev", subject + "_dev.csv"), header=None)
-            dev_df = dev_df[:min(k, len(dev_df))]
-        elif validation and withexp:
-            dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "dev", subject + "_dev_addexp.csv"), header=None)
-            dev_df = dev_df[:min(k, len(dev_df))]
-        elif validation and withexpfour:
-            dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "dev", subject + "_dev_explainfour.csv"), header=None)
-            dev_df = dev_df[:min(k, len(dev_df))]
-        elif withexp:
-            dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "test", subject + "_test_addexp.csv"), header=None)
+        if validation:
+            dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "dev", subject + "_dev.csv"), header=None)[:k]
             dev_df = dev_df[:min(k, len(dev_df))]
         else:
             dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "test", subject + "_test.csv"), header=None)
             dev_df = dev_df[:min(k, len(dev_df))]
+            k = min(k, len(dev_df))
 
-        print(dev_df)
-
-        for i in range( len(dev_df) ):
-
+        for i in range(k):
             prompt = gen_prompt(dev_df, subject, i)
-
-            if withexp:
-                completion = " " + dev_df.iloc[i, dev_df.shape[1] - 2] + "\nExplanation: " + dev_df.iloc[i, dev_df.shape[1] - 1]
-            elif validation and withexpfour:
-                completion = " " + dev_df.iloc[i, dev_df.shape[1] - 5] \
-                    + "\nExplanation: A: " + dev_df.iloc[i, dev_df.shape[1] - 4] \
-                    + " B: " + dev_df.iloc[i, dev_df.shape[1] - 3] \
-                    + " C: " + dev_df.iloc[i, dev_df.shape[1] - 2] \
-                    + " D: " + dev_df.iloc[i, dev_df.shape[1] - 1]                
-            else:
-                completion = " " + dev_df.iloc[i, dev_df.shape[1] - 2 + 1]
+            answer = " " + dev_df.iloc[i, dev_df.shape[1] - 2 + 1]
 
             if use_chat_format:
                 if chat_format == "tulu":
@@ -369,116 +449,12 @@ def get_mmlu_dataset(data_dir: str,
                     prompt = f"<s> {B_INST} {prompt} {E_INST} The answer is:"
             else:
                 prompt = prompt
-
-            full_input_ids, labels, attention_mask = tokenize(
-                tokenizer, prompt, completion, max_length, print_ex=True if i == 0 else False
-            )
-
+            full_input_ids, labels, attention_mask = tokenize(tokenizer, prompt, answer, max_length, print_ex=True if i == 0 else False)
             dataset["input_ids"].append(full_input_ids)
             dataset["labels"].append(labels)
             dataset["attention_mask"].append(attention_mask)
-
     dataset = Dataset.from_dict(dataset)
     return dataset
-
-
-
-
-# def get_mmlu_dataset(data_dir: str,
-#                      tokenizer: PreTrainedTokenizerBase,
-#                      max_length: int,
-#                      use_chat_format=True,
-#                      chat_format="tulu",
-#                      validation=False,
-#                      k = 5,
-#                      subject = 'abstract_algebra', 
-#                      **kwargs):
-#     """
-#     Get the MMLU dataset in the instruction tuning format. Each example is formatted as follows:
-
-#     Query:
-#     <|user|>
-#     <Task Prompt>
-#     <Question>
-#     <|assistant|>
-#     The answer is:
-
-#     Completion:
-#     <Answer>
-
-#     Args:
-#         data_dir (str): The main data directory.
-#         tokenizer (Tokenizer): The tokenizer used to tokenize the input text.
-#         max_length (int): The maximum length of the input sequence.
-#         use_chat_format (bool, optional): Whether to use chat format for the prompts. Defaults to True.
-#         chat_format (str, optional): The chat format to use for the prompts. Defaults to "tulu".
-
-#     Returns:
-#         Dataset: The tokenized dataset containing input_ids, attention_mask, and labels.
-#     """
-#     mmlu_data_dir = os.path.join(data_dir, "eval", "mmlu")
-#     # subjects = sorted(
-#     #     [
-#     #         f.split("_test.csv")[0]
-#     #         for f in os.listdir(os.path.join(mmlu_data_dir, "test"))
-#     #         if "_test.csv" in f
-#     #     ]
-#     # )
-#     subjects = [subject]
-
-#     def format_subject(subject):
-#         l = subject.split("_")
-#         s = ""
-#         for entry in l:
-#             s += " " + entry
-#         return s
-
-#     def gen_prompt(train_df, subject, i=0):
-#         prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(
-#             format_subject(subject)
-#         )
-#         prompt += format_example(train_df, i, include_answer=False)
-#         return prompt
-
-#     def format_example(df, idx, include_answer=True):
-#         choices = ["A", "B", "C", "D"]
-#         prompt = df.iloc[idx, 0]
-#         k = df.shape[1] - 2
-#         for j in range(k):
-#             prompt += "\n{}. {}".format(choices[j], df.iloc[idx, j + 1])
-#         prompt += "\nAnswer:"
-#         return prompt
-
-#     dataset = {"input_ids": [], "attention_mask": [], "labels": []}
-#     for subject in subjects:
-
-#         if validation:
-#             dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "dev", subject + "_dev.csv"), header=None)[:k]
-#             dev_df = dev_df[:min(k, len(dev_df))]
-#         else:
-#             dev_df = pd.read_csv(os.path.join(mmlu_data_dir, "test", subject + "_test.csv"), header=None)
-#             dev_df = dev_df[:min(k, len(dev_df))]
-
-#         for i in range(k):
-#             prompt = gen_prompt(dev_df, subject, i)
-#             answer = " " + dev_df.iloc[i, dev_df.shape[1] - 2 + 1]
-
-#             if use_chat_format:
-#                 if chat_format == "tulu":
-#                     prompt = "<|user|>\n" + prompt + "\n<|assistant|>\nThe answer is:"
-#                 else:
-#                     # f"<s> {B_INST} {task_prompt.strip()} {question} {E_INST} A:"
-#                     prompt = f"<s> {B_INST} {prompt} {E_INST} The answer is:"
-#             else:
-#                 prompt = prompt
-#             full_input_ids, labels, attention_mask = tokenize(
-#                 tokenizer, prompt, answer, max_length, print_ex=True if i == 0 else False)
-#             dataset["input_ids"].append(full_input_ids)
-#             dataset["labels"].append(labels)
-#             dataset["attention_mask"].append(attention_mask)
-#     dataset = Dataset.from_dict(dataset)
-#     return dataset
-
 
 
 def get_dataset(task, **kwargs):
