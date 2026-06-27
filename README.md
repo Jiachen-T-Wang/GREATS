@@ -2,6 +2,18 @@
 
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/pdf?id=232VcN8tSx)
 
+> [!WARNING]
+> **This repository is no longer maintained.** GREATS has been reimplemented and is now
+> actively maintained as part of **GhostSuite**, which provides a cleaner, drop-in
+> implementation of the "ghost" inner-product technique with minimal training-loop changes.
+>
+> 👉 Please use **[`examples/greats`](https://github.com/Jiachen-T-Wang/GhostSuite/tree/HEAD/examples/greats)**
+> in **[GhostSuite](https://github.com/Jiachen-T-Wang/GhostSuite)** for an up-to-date,
+> maintained version (online batch selection for both pretraining and LoRA instruction
+> tuning, built on the GhostSuite `GradDotProd` engine).
+>
+> The code below is kept only for reference and reproducing the original paper experiments.
+
 <p align="center">
     <img src="./abstract.png" alt="abs" width="500px">
 </p>
